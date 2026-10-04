@@ -6,7 +6,7 @@ compatibility_date = "2026-09-30"
 # Replace example domains / Apple Team ID before production deployment.
 [vars]
 PUBLIC_BASE_URL = "https://incoming.example.com"
-ALLOWED_ORIGINS = "https://admin.incoming.example.com"
+ALLOWED_ORIGINS = "https://incoming2-0-admin.incoming-osmcreations.workers.dev/"
 ACCESS_TOKEN_TTL_SECONDS = "900"
 REFRESH_TOKEN_TTL_SECONDS = "2592000"
 APP_CLIP_SESSION_TTL_SECONDS = "1200"

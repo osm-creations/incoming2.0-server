@@ -19,7 +19,19 @@ export async function jsonBody<S extends ZodType>(c: Context, schema: S): Promis
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    return { error: c.json({ error: { code: 'VALIDATION_ERROR', message: 'Request validation failed.' } }, 422) };
+    const issues = parsed.error.issues.map(issue => ({
+      field: issue.path.length ? issue.path.join('.') : 'request',
+      message: issue.message
+    }));
+    return {
+      error: c.json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: issues[0]?.message ?? 'Request validation failed.',
+          details: issues
+        }
+      }, 422)
+    };
   }
   return { data: parsed.data as z.infer<S> };
 }

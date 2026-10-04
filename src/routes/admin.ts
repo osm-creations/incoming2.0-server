@@ -11,10 +11,18 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 app.use('*', authMiddleware, adminOnly, adminCsrf);
 
 const createSchema = z.object({
-  publicUserId: z.string().trim().min(3).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(),
-  email: z.string().email().max(254),
-  password: z.string().min(10).max(200),
-  role: z.enum(['ADMIN', 'MAGICIAN']).default('MAGICIAN')
+  publicUserId: z.preprocess(
+    value => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string()
+      .trim()
+      .min(3, 'Public User ID must be at least 3 characters.')
+      .max(64, 'Public User ID must be at most 64 characters.')
+      .regex(/^[A-Za-z0-9_-]+$/, 'Public User ID may contain only letters, numbers, underscore (_) and hyphen (-).')
+      .optional()
+  ),
+  email: z.string().trim().email('Enter a valid email address.').max(254, 'Email is too long.'),
+  password: z.string().min(12, 'Temporary password must be at least 12 characters.').max(200, 'Password is too long.'),
+  role: z.enum(['ADMIN', 'MAGICIAN'], { message: 'Role must be ADMIN or MAGICIAN.' }).default('MAGICIAN')
 });
 
 app.get('/dashboard', async c => {

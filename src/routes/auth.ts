@@ -55,7 +55,10 @@ app.post('/login', async c => {
     setCookie(c, 'access_token', accessToken, { httpOnly: true, secure, sameSite: 'Lax', path: '/', maxAge: Number(c.env.ACCESS_TOKEN_TTL_SECONDS || '900') });
     setCookie(c, 'refresh_token', refreshToken, { httpOnly: true, secure, sameSite: 'Lax', path: '/api/v1/auth', maxAge: Number(c.env.REFRESH_TOKEN_TTL_SECONDS || '2592000') });
     setCookie(c, 'csrf_token', csrf, { httpOnly: false, secure, sameSite: 'Lax', path: '/', maxAge: Number(c.env.REFRESH_TOKEN_TTL_SECONDS || '2592000') });
-    return ok(c, { user, forcePasswordChange: Boolean(row.force_password_change) });
+    // The CSRF cookie is intentionally host-only on the API domain. The admin
+    // app may run on a sibling subdomain, so return the same non-secret token
+    // in the authenticated login response instead of requiring document.cookie.
+    return ok(c, { user, forcePasswordChange: Boolean(row.force_password_change), csrfToken: csrf });
   }
 
   return ok(c, { accessToken, refreshToken, expiresIn: Number(c.env.ACCESS_TOKEN_TTL_SECONDS || '900'), user, forcePasswordChange: Boolean(row.force_password_change) });
@@ -87,9 +90,14 @@ app.post('/refresh', async c => {
 
   if (!bodyToken) {
     const secure = new URL(c.req.url).protocol === 'https:';
+    let csrf = getCookie(c, 'csrf_token');
+    if (!csrf) {
+      csrf = randomToken(24);
+      setCookie(c, 'csrf_token', csrf, { httpOnly: false, secure, sameSite: 'Lax', path: '/', maxAge: Number(c.env.REFRESH_TOKEN_TTL_SECONDS || '2592000') });
+    }
     setCookie(c, 'access_token', accessToken, { httpOnly: true, secure, sameSite: 'Lax', path: '/', maxAge: Number(c.env.ACCESS_TOKEN_TTL_SECONDS || '900') });
     setCookie(c, 'refresh_token', newRefresh, { httpOnly: true, secure, sameSite: 'Lax', path: '/api/v1/auth', maxAge: Number(c.env.REFRESH_TOKEN_TTL_SECONDS || '2592000') });
-    return ok(c, { user });
+    return ok(c, { user, csrfToken: csrf });
   }
   return ok(c, { accessToken, refreshToken: newRefresh, expiresIn: Number(c.env.ACCESS_TOKEN_TTL_SECONDS || '900'), user });
 });
@@ -105,6 +113,13 @@ app.post('/logout', async c => {
   deleteCookie(c, 'refresh_token', { path: '/api/v1/auth' });
   deleteCookie(c, 'csrf_token', { path: '/' });
   return ok(c, { loggedOut: true });
+});
+
+
+app.get('/csrf', authMiddleware, async c => {
+  const csrf = getCookie(c, 'csrf_token');
+  if (!csrf) return apiError(c, 403, 'CSRF_UNAVAILABLE', 'CSRF token is unavailable. Please sign in again.');
+  return ok(c, { csrfToken: csrf });
 });
 
 app.get('/me', authMiddleware, async c => ok(c, { user: c.get('authUser') }));

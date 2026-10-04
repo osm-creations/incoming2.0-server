@@ -1,0 +1,26 @@
+name = "incoming2-0-server"
+main = "src/index.ts"
+compatibility_date = "2026-09-30"
+
+# Runtime configuration (safe to commit; these are NOT secrets).
+# Replace example domains / Apple Team ID before production deployment.
+[vars]
+PUBLIC_BASE_URL = "https://incoming.example.com"
+ALLOWED_ORIGINS = "https://admin.incoming.example.com"
+ACCESS_TOKEN_TTL_SECONDS = "900"
+REFRESH_TOKEN_TTL_SECONDS = "2592000"
+APP_CLIP_SESSION_TTL_SECONDS = "1200"
+APP_CLIP_APP_ID = "TEAMID.com.osmcreations.incoming2.Clip"
+PARENT_APP_ID = "TEAMID.com.osmcreations.incoming2"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "incoming2-db"
+database_id = "4e9fa1c0-fc36-43f6-b441-80e8ffb444d5"
+
+# Runtime secrets are configured in Cloudflare Dashboard > Worker > Settings > Variables & Secrets.
+# Never commit the real values.
+# JWT_SECRET
+# TOKEN_PEPPER
+# CAPABILITY_SIGNING_SECRET
+# SETUP_SECRET

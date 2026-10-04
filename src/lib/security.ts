@@ -2,7 +2,10 @@ import { sign, verify } from 'hono/jwt';
 import { base64UrlToBytes, bytesToBase64Url, randomToken, timingSafeEqual, utf8 } from './encoding';
 import type { AuthUser, Bindings } from '../types/env';
 
-const PBKDF2_ITERATIONS = 180_000;
+// Cloudflare Workers' Web Crypto runtime rejects PBKDF2 iteration counts above 100,000.
+// Keep this at the platform ceiling so password creation/login does not throw.
+const PBKDF2_ITERATIONS = 100_000;
+const PBKDF2_MAX_ITERATIONS = 100_000;
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = new Uint8Array(16);
@@ -20,7 +23,7 @@ export async function verifyPassword(password: string, encoded: string): Promise
   const [algorithm, iterationsRaw, saltRaw, hashRaw] = encoded.split('$');
   if (algorithm !== 'pbkdf2_sha256' || !iterationsRaw || !saltRaw || !hashRaw) return false;
   const iterations = Number(iterationsRaw);
-  if (!Number.isSafeInteger(iterations) || iterations < 100_000) return false;
+  if (!Number.isSafeInteger(iterations) || iterations < 100_000 || iterations > PBKDF2_MAX_ITERATIONS) return false;
   const salt = base64UrlToBytes(saltRaw);
   const expected = base64UrlToBytes(hashRaw);
   const key = await crypto.subtle.importKey('raw', utf8(password), 'PBKDF2', false, ['deriveBits']);

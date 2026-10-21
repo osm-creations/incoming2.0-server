@@ -5,13 +5,13 @@ compatibility_date = "2026-09-30"
 # Runtime configuration (safe to commit; these are NOT secrets).
 # Replace example domains / Apple Team ID before production deployment.
 [vars]
-PUBLIC_BASE_URL = "https://incoming.example.com"
-ALLOWED_ORIGINS = "https://incoming2-0-admin.incoming-osmcreations.workers.dev/"
+PUBLIC_BASE_URL = "https://incoming2-0-server.incoming-osmcreations.workers.dev"
+ALLOWED_ORIGINS = "https://incoming2-0-admin.incoming-osmcreations.workers.dev"
 ACCESS_TOKEN_TTL_SECONDS = "900"
 REFRESH_TOKEN_TTL_SECONDS = "2592000"
 APP_CLIP_SESSION_TTL_SECONDS = "1200"
-APP_CLIP_APP_ID = "TEAMID.com.osmcreations.incoming2.Clip"
-PARENT_APP_ID = "TEAMID.com.osmcreations.incoming2"
+APP_CLIP_APP_ID = "F34Q6U9QKH.com.osmcreations.incoming2.Clip"
+PARENT_APP_ID = "F34Q6U9QKH.com.osmcreations.incoming2"
 
 [[d1_databases]]
 binding = "DB"

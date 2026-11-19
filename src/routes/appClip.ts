@@ -30,6 +30,7 @@ app.post('/bootstrap', async c => {
     VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE', 0, ?6, ?7, ?7)`)
     .bind(crypto.randomUUID(), publicSessionId, row.id, row.owner_user_id, sessionHash, expiresAt.toISOString(), now.toISOString()).run();
 
+  c.header('Cache-Control', 'private, no-store');
   return ok(c, {
     session: { id: publicSessionId, token: sessionToken, expiresAt: expiresAt.toISOString() },
     configuration: {
@@ -51,7 +52,7 @@ async function clipSession(c: Context<{ Bindings: Bindings; Variables: Variables
   const hash = await hashOpaqueToken(auth.slice(5), c.env.TOKEN_PEPPER);
   const row = await c.env.DB.prepare(`SELECT cs.* FROM app_clip_sessions cs
     JOIN users u ON u.id=cs.owner_user_id AND u.status='ACTIVE'
-    JOIN clip_configs cfg ON cfg.id=cs.config_id AND cfg.enabled=1
+    JOIN clip_configs cfg ON cfg.id=cs.config_id AND cfg.owner_user_id=cs.owner_user_id AND cfg.enabled=1
     WHERE cs.public_session_id=?1 AND cs.session_token_hash=?2 LIMIT 1`)
     .bind(c.req.param('id'), hash).first<{ id: string; owner_user_id: string; config_id: string; expires_at: string; latest_revision: number; status: string }>();
   if (!row || Date.parse(row.expires_at) <= Date.now()) return null;

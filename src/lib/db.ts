@@ -28,10 +28,15 @@ export function toAuthUser(row: UserRow): AuthUser {
 const authUserQuery = `SELECT u.*, COALESCE(s.credential_version, 0) AS credential_version
   FROM users u LEFT JOIN incoming_user_settings s ON s.user_id=u.id`;
 
-export function findUserByLogin(db: D1Database, login: string): Promise<UserRow | null> {
-  const normalized = login.trim().toLowerCase();
-  return withUserSettings(db, () => db.prepare(`${authUserQuery}
-    WHERE lower(u.email)=?1 OR lower(u.public_user_id)=?1 LIMIT 1`).bind(normalized).first<UserRow>());
+export async function findUserByLogin(db: D1Database, login: string): Promise<UserRow | null> {
+  const identifier = login.trim();
+  const { results } = await withUserSettings(db, () => db.prepare(`${authUserQuery}
+    WHERE lower(u.email)=?1 OR lower(u.public_user_id)=?1
+    ORDER BY (u.public_user_id=?2) DESC LIMIT 2`).bind(identifier.toLowerCase(), identifier).all<UserRow>());
+  // Public IDs are case-sensitive in D1. Accept alternate casing only if it identifies one user.
+  const [candidate] = results;
+  if (candidate && (results.length === 1 || candidate.public_user_id === identifier)) return candidate;
+  return null;
 }
 
 export function findUserById(db: D1Database, id: string): Promise<UserRow | null> {

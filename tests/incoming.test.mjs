@@ -49,7 +49,7 @@ beforeAll(async () => {
     },
     outboundService: request => {
       externalCalls.push([request.method, request.url]);
-      return externalResponse();
+      return externalResponse(request);
     }
   }));
   database = await worker.getD1Database('DB');
@@ -141,6 +141,71 @@ test('keeps existing notes, manual names and 11z previews independent', async ()
   expect(cleared.config).toMatchObject({ static_text: 'Force word', caller_name: null, inject_user_id: null });
   expect((await save({ staticText: 'New force' })).data.config.caller_name).toBeNull();
   await request(selection, { headers: clipHeaders, status: 404 });
+});
+
+test('keeps two performers’ settings, existing links and Inject selections scoped to their accounts', async () => {
+  const password = randomUUID();
+  const primary = '/clip-configs/primary';
+  const save = (headers, body) => request(primary, { method: 'PATCH', headers, body });
+  const bootstrap = (invocationUrl, override = {}, status = 201) => {
+    const url = new URL(invocationUrl);
+    const [, , publicUserId, publicConfigId] = url.pathname.split('/');
+    return request('/app-clip/bootstrap', {
+      method: 'POST', status,
+      body: { publicUserId, publicConfigId, capability: url.searchParams.get('t'), ...override }
+    });
+  };
+  const selection = (id, token, status = 200) => request('/app-clip/sessions/' + id + '/selection', {
+    headers: { Authorization: 'Clip ' + token }, status
+  });
+  async function createAccount(id, email) {
+    const created = await request('/admin/users', {
+      method: 'POST', headers: adminHeaders, body: { publicUserId: id, email, password, role: 'MAGICIAN' }, status: 201
+    });
+    const signedIn = (await login(id, password)).data;
+    expect(signedIn.user.id).toBe(created.data.id);
+    return { Authorization: 'Bearer ' + signedIn.accessToken };
+  }
+  const alpha = await createAccount('CasePair', 'alpha@example.org');
+  expect((await login('CASEPAIR', password)).data.user.publicUserId).toBe('CasePair');
+  const beta = await createAccount('casepair', 'beta@example.org');
+  await login('CASEPAIR', password, 'ios', 401);
+  expect((await login('BETA@example.org', password)).data.user.publicUserId).toBe('casepair');
+
+  const a = (await save(alpha, { staticText: 'Rose', callerName: 'Alice', injectUserId: 'inject-A' })).data;
+  const b = (await save(beta, { staticText: 'Key', callerName: 'Bryn', injectUserId: 'inject-B' })).data;
+  const alphaSettings = await request(primary, { headers: alpha });
+  expect(alphaSettings.headers.get('Cache-Control')).toContain('no-store');
+  expect(alphaSettings.data.config).toMatchObject({ static_text: 'Rose', caller_name: 'Alice', inject_user_id: 'inject-A' });
+  expect((await request(primary, { headers: beta })).data.config)
+    .toMatchObject({ static_text: 'Key', caller_name: 'Bryn', inject_user_id: 'inject-B' });
+  await request('/clip-configs/' + a.config.id, { headers: beta, status: 404 });
+  await bootstrap(a.invocationUrl, { publicUserId: 'casepair' }, 404);
+
+  // A second config belongs to the same performer and shares only that performer's account settings.
+  const extra = await request('/clip-configs', { method: 'POST', headers: alpha, status: 201,
+    body: { name: 'Alternate trick', mode: 'STATIC', staticText: 'Coin' } });
+  const oldLink = await bootstrap(a.invocationUrl);
+  expect(oldLink.headers.get('Cache-Control')).toContain('no-store');
+  expect(oldLink.data.configuration).toMatchObject({ staticText: 'Rose', callerName: 'Alice' });
+  expect((await bootstrap(extra.data.invocationUrl)).data.configuration)
+    .toMatchObject({ staticText: 'Coin', callerName: 'Alice' });
+  const aSession = oldLink.data.session;
+  const bClip = (await bootstrap(b.invocationUrl)).data;
+  const bSession = bClip.session;
+  expect(bClip.configuration).toMatchObject({ staticText: 'Key', callerName: 'Bryn' });
+  externalResponse = req => Response.json({ value: new URL(req.url).searchParams.get('user') });
+  expect((await selection(aSession.id, aSession.token)).data.value).toBe('inject-A');
+  expect((await selection(bSession.id, bSession.token)).data.value).toBe('inject-B');
+  await selection(aSession.id, bSession.token, 401);
+
+  await save(beta, { callerName: 'Beth', injectUserId: 'inject-B2' });
+  expect((await selection(bSession.id, bSession.token)).data.value).toBe('inject-B2');
+  expect((await bootstrap(b.invocationUrl)).data.configuration.callerName).toBe('Beth');
+  await save(beta, { callerName: '', injectUserId: '' });
+  await selection(bSession.id, bSession.token, 404);
+  expect((await selection(aSession.id, aSession.token)).data.value).toBe('inject-A');
+  expect((await bootstrap(a.invocationUrl)).data.configuration.callerName).toBe('Alice');
 });
 
 test('admin reset revokes existing credentials and preserves the account', async () => {

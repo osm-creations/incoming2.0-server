@@ -115,6 +115,7 @@ async function ensurePrimaryConfig(c: WorkerContext) {
 async function primaryResponse(c: WorkerContext, row: any) {
   const owner = c.get('authUser')!;
   const settings = await loadUserSettings(c.env.DB, owner.id);
+  c.header('Cache-Control', 'private, no-store');
   return ok(c, {
     config: {
       ...row,

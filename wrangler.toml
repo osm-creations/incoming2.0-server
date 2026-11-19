@@ -1,6 +1,12 @@
 name = "incoming2-0-server"
 main = "src/index.ts"
 compatibility_date = "2026-09-30"
+keep_vars = true
+
+# In the Worker's Settings > Variables and Secrets, add the Text variable
+# INJECT_SELECTION_URL_TEMPLATE to override https://11z.co/_w/{userId}/selection.
+# Use {userId} once in an HTTPS path or query. Leave the variable out of [vars]
+# so that the dashboard value survives future Git deployments.
 
 # Runtime configuration (safe to commit; these are NOT secrets).
 # Replace example domains / Apple Team ID before production deployment.

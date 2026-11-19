@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { afterAll, beforeAll, expect, test } from 'vitest';
+import { injectSelectionUrl } from '../src/lib/injectSelection.ts';
 
 let worker;
 let database;
@@ -38,6 +39,7 @@ beforeAll(async () => {
     d1Databases: ['DB'],
     bindings: {
       PUBLIC_BASE_URL: 'https://test.local',
+      INJECT_SELECTION_URL_TEMPLATE: 'https://selection.example.org/current?user={userId}',
       SETUP_SECRET: setupSecret,
       TOKEN_PEPPER: randomUUID(),
       JWT_SECRET: randomUUID(),
@@ -105,9 +107,10 @@ test('keeps existing notes, manual names and 11z previews independent', async ()
   const clipHeaders = { Authorization: 'Clip ' + boot.session.token };
   externalResponse = () => Response.json({ value: 'hello', count: 2114 });
   expect((await request(selection, { headers: clipHeaders })).data).toEqual({ value: 'hello' });
-  expect(externalCalls).toEqual([['GET', 'https://11z.co/_w/Test_123/selection']]);
+  expect(externalCalls).toEqual([['GET', 'https://selection.example.org/current?user=Test_123']]);
   externalResponse = () => Response.redirect('https://example.org');
   await request(selection, { headers: clipHeaders, status: 502 });
+  expect(externalCalls.at(-1)).toEqual(['GET', 'https://selection.example.org/current?user=Test_123']);
   const cleared = (await save({ callerName: '', injectUserId: '' })).data;
   expect(cleared.config).toMatchObject({ static_text: 'Force word', caller_name: null, inject_user_id: null });
   expect((await save({ staticText: 'New force' })).data.config.caller_name).toBeNull();
@@ -123,4 +126,26 @@ test('admin reset revokes existing credentials and preserves the account', async
   await request('/auth/refresh', { method: 'POST', body: { refreshToken: performer.refreshToken }, status: 401 });
   await login('performer', setUpPassword, 'ios', 401);
   expect((await login('performer', password)).data.user.id).toBe(performer.user.id);
+});
+
+test('defaults to the established URL and encodes an ID once in a configured path or query', () => {
+  expect(injectSelectionUrl(undefined, 'Test_123').href).toBe('https://11z.co/_w/Test_123/selection');
+  expect(injectSelectionUrl('https://api.example.org/{userId}/current', 'A/B').href)
+    .toBe('https://api.example.org/A%2FB/current');
+  expect(injectSelectionUrl('https://api.example.org/?q={userId}', 'A&B').href)
+    .toBe('https://api.example.org/?q=A%26B');
+});
+
+test.each([
+  '',
+  'http://example.org/{userId}',
+  'https://{userId}.example.org/',
+  'https://example.org:{userId}/api',
+  'https://user:pass@example.org/{userId}',
+  'https://example.org/path',
+  'https://example.org/{userId}/{userId}',
+  'https://example.org/path#{userId}',
+  'https://example.org/{userId}?other={unknown}'
+])('rejects an invalid URL template %s', template => {
+  expect(() => injectSelectionUrl(template, 'Alice')).toThrow();
 });

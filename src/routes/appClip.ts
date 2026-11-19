@@ -4,6 +4,7 @@ import type { Bindings, Variables } from '../types/env';
 import { apiError, jsonBody, ok } from '../lib/http';
 import { hashOpaqueToken, newSessionToken, verifyCapability } from '../lib/security';
 import { randomPublicId } from '../lib/encoding';
+import { injectSelectionUrl } from '../lib/injectSelection';
 import { effectiveCallerName, loadUserSettings } from '../lib/userSettings';
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -63,11 +64,11 @@ app.get('/sessions/:id/selection', async c => {
   if (!session) return apiError(c, 401, 'SESSION_EXPIRED', 'This session has expired.');
   const settings = await loadUserSettings(c.env.DB, session.owner_user_id);
   if (!settings?.inject_user_id) {
-    return apiError(c, 404, 'INJECT_NOT_CONFIGURED', 'No 11z user ID is configured.');
+    return apiError(c, 404, 'INJECT_NOT_CONFIGURED', 'No Inject User ID is configured.');
   }
 
-  const url = `https://11z.co/_w/${encodeURIComponent(settings.inject_user_id)}/selection`;
   try {
+    const url = injectSelectionUrl(c.env.INJECT_SELECTION_URL_TEMPLATE, settings.inject_user_id);
     const response = await fetch(url, {
       method: 'GET', headers: { Accept: 'application/json' },
       redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(5000)
@@ -89,10 +90,10 @@ app.get('/sessions/:id/selection', async c => {
     }
     const selection = z.object({ value: z.string().trim().min(1).max(120) })
       .safeParse(JSON.parse(body + decoder.decode()));
-    if (!selection.success) return apiError(c, 422, 'NO_SELECTION', '11z has no usable caller name. Choose a new value and try again.');
+    if (!selection.success) return apiError(c, 422, 'NO_SELECTION', 'The selection has no usable caller name. Choose a new value and try again.');
     return ok(c, { value: selection.data.value });
   } catch {
-    return apiError(c, 502, 'SELECTION_UNAVAILABLE', 'Could not reach the 11z selection. Please try again.');
+    return apiError(c, 502, 'SELECTION_UNAVAILABLE', 'Could not retrieve the Inject selection. Please try again.');
   }
 });
 

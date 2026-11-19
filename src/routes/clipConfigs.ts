@@ -25,7 +25,7 @@ const primaryUpdateSchema = z.object({
   staticText: z.string().max(500).optional(),
   callerName: z.string().trim().max(120).optional(),
   injectUserId: z.string().trim().max(128)
-    .regex(/^[A-Za-z0-9_-]*$/, 'Use only letters, numbers, underscores or hyphens for the 11z user ID.')
+    .regex(/^[A-Za-z0-9_-]*$/, 'Use only letters, numbers, underscores or hyphens for the Inject User ID.')
     .optional()
 }).refine(v => Object.values(v).some(value => value !== undefined), 'No updates supplied.');
 

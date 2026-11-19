@@ -1,9 +1,10 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import type { Bindings, Variables } from '../types/env';
 import { apiError, jsonBody, ok } from '../lib/http';
 import { hashOpaqueToken, newSessionToken, verifyCapability } from '../lib/security';
 import { randomPublicId } from '../lib/encoding';
+import { effectiveCallerName, loadUserSettings } from '../lib/userSettings';
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -17,6 +18,7 @@ app.post('/bootstrap', async c => {
     WHERE cc.public_config_id=?1 AND u.public_user_id=?2 LIMIT 1`).bind(body.data.publicConfigId, body.data.publicUserId).first();
   if (!row || row.user_status !== 'ACTIVE' || !row.enabled || row.capability_version !== cap.version) return apiError(c, 404, 'EXPERIENCE_UNAVAILABLE', 'This experience is unavailable.');
 
+  const settings = await loadUserSettings(c.env.DB, String(row.owner_user_id));
   const options = row.mode === 'MENU' ? await c.env.DB.prepare(`SELECT id, value, display_order FROM clip_menu_options WHERE config_id=?1 AND enabled=1 ORDER BY display_order`).bind(row.id).all() : { results: [] };
   const sessionToken = newSessionToken();
   const sessionHash = await hashOpaqueToken(sessionToken, c.env.TOKEN_PEPPER);
@@ -33,21 +35,66 @@ app.post('/bootstrap', async c => {
       name: row.name,
       mode: row.mode,
       staticText: row.static_text,
+      callerName: effectiveCallerName(settings?.caller_name, row.static_text as string | null),
+      hasInjectUserId: Boolean(settings?.inject_user_id),
       openOverflowInitially: Boolean(row.open_overflow_initially),
       options: options.results.map((o: any) => ({ id: o.id, value: o.value }))
     }
   }, 201);
 });
 
-async function clipSession(c: any) {
+async function clipSession(c: Context<{ Bindings: Bindings; Variables: Variables }>) {
   const auth = c.req.header('Authorization') ?? '';
   if (!auth.startsWith('Clip ')) return null;
   const hash = await hashOpaqueToken(auth.slice(5), c.env.TOKEN_PEPPER);
-  const row = await c.env.DB.prepare(`SELECT * FROM app_clip_sessions WHERE public_session_id=?1 AND session_token_hash=?2 LIMIT 1`).bind(c.req.param('id'), hash).first();
+  const row = await c.env.DB.prepare(`SELECT cs.* FROM app_clip_sessions cs
+    JOIN users u ON u.id=cs.owner_user_id AND u.status='ACTIVE'
+    JOIN clip_configs cfg ON cfg.id=cs.config_id AND cfg.enabled=1
+    WHERE cs.public_session_id=?1 AND cs.session_token_hash=?2 LIMIT 1`)
+    .bind(c.req.param('id'), hash).first<{ id: string; owner_user_id: string; config_id: string; expires_at: string; latest_revision: number; status: string }>();
   if (!row || Date.parse(row.expires_at) <= Date.now()) return null;
   await c.env.DB.prepare(`UPDATE app_clip_sessions SET last_seen_at=?2 WHERE id=?1`).bind(row.id, new Date().toISOString()).run();
   return row;
 }
+
+app.get('/sessions/:id/selection', async c => {
+  c.header('Cache-Control', 'no-store');
+  const session = await clipSession(c);
+  if (!session) return apiError(c, 401, 'SESSION_EXPIRED', 'This session has expired.');
+  const settings = await loadUserSettings(c.env.DB, session.owner_user_id);
+  if (!settings?.inject_user_id) {
+    return apiError(c, 404, 'INJECT_NOT_CONFIGURED', 'No 11z user ID is configured.');
+  }
+
+  const url = `https://11z.co/_w/${encodeURIComponent(settings.inject_user_id)}/selection`;
+  try {
+    const response = await fetch(url, {
+      method: 'GET', headers: { Accept: 'application/json' },
+      redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok || !response.body) throw new Error('Selection service unavailable');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    let body = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 32_768) {
+        await reader.cancel();
+        throw new Error('Selection response too large');
+      }
+      body += decoder.decode(chunk.value, { stream: true });
+    }
+    const selection = z.object({ value: z.string().trim().min(1).max(120) })
+      .safeParse(JSON.parse(body + decoder.decode()));
+    if (!selection.success) return apiError(c, 422, 'NO_SELECTION', '11z has no usable caller name. Choose a new value and try again.');
+    return ok(c, { value: selection.data.value });
+  } catch {
+    return apiError(c, 502, 'SELECTION_UNAVAILABLE', 'Could not reach the 11z selection. Please try again.');
+  }
+});
 
 app.get('/sessions/:id/state', async c => {
   const session = await clipSession(c);

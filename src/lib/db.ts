@@ -1,3 +1,4 @@
+import { withUserSettings } from './userSettings';
 import type { AuthUser } from '../types/env';
 
 export type UserRow = {
@@ -5,6 +6,7 @@ export type UserRow = {
   public_user_id: string;
   email: string;
   password_hash: string;
+  credential_version: number;
   role: 'ADMIN' | 'MAGICIAN';
   status: 'ACTIVE' | 'DISABLED';
   force_password_change: number;
@@ -23,14 +25,17 @@ export function toAuthUser(row: UserRow): AuthUser {
   };
 }
 
-export async function findUserByLogin(db: D1Database, login: string): Promise<UserRow | null> {
+const authUserQuery = `SELECT u.*, COALESCE(s.credential_version, 0) AS credential_version
+  FROM users u LEFT JOIN incoming_user_settings s ON s.user_id=u.id`;
+
+export function findUserByLogin(db: D1Database, login: string): Promise<UserRow | null> {
   const normalized = login.trim().toLowerCase();
-  return db.prepare(`SELECT * FROM users WHERE lower(email) = ?1 OR lower(public_user_id) = ?1 LIMIT 1`)
-    .bind(normalized).first<UserRow>();
+  return withUserSettings(db, () => db.prepare(`${authUserQuery}
+    WHERE lower(u.email)=?1 OR lower(u.public_user_id)=?1 LIMIT 1`).bind(normalized).first<UserRow>());
 }
 
-export async function findUserById(db: D1Database, id: string): Promise<UserRow | null> {
-  return db.prepare(`SELECT * FROM users WHERE id = ?1 LIMIT 1`).bind(id).first<UserRow>();
+export function findUserById(db: D1Database, id: string): Promise<UserRow | null> {
+  return withUserSettings(db, () => db.prepare(`${authUserQuery} WHERE u.id=?1 LIMIT 1`).bind(id).first<UserRow>());
 }
 
 export async function audit(db: D1Database, entry: {

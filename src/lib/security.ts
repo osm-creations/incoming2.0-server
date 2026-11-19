@@ -40,11 +40,11 @@ export async function hashOpaqueToken(token: string, pepper: string): Promise<st
   return sha256Base64Url(`${token}:${pepper}`);
 }
 
-export async function issueAccessToken(user: AuthUser, env: Bindings): Promise<string> {
+export async function issueAccessToken(user: AuthUser, env: Bindings, credentialVersion: number): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const ttl = Number(env.ACCESS_TOKEN_TTL_SECONDS || '900');
   return sign(
-    { sub: user.id, role: user.role, publicUserId: user.publicUserId, iat: now, exp: now + ttl, typ: 'access' },
+    { sub: user.id, credentialVersion, role: user.role, publicUserId: user.publicUserId, iat: now, exp: now + ttl, typ: 'access' },
     env.JWT_SECRET,
     'HS256'
   );

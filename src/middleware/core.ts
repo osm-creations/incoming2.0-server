@@ -21,11 +21,14 @@ export const authMiddleware = createMiddleware<{ Bindings: Bindings; Variables: 
     if (!sub) return apiError(c, 401, 'INVALID_TOKEN', 'Authentication required.');
     const row = await findUserById(c.env.DB, sub);
     if (!row || row.status !== 'ACTIVE') return apiError(c, 401, 'ACCOUNT_UNAVAILABLE', 'Authentication required.');
+    if ((payload.credentialVersion ?? 0) !== row.credential_version) {
+      return apiError(c, 401, 'INVALID_TOKEN', 'Please sign in again.');
+    }
     c.set('authUser', toAuthUser(row));
-    await next();
   } catch {
     return apiError(c, 401, 'INVALID_TOKEN', 'Authentication required.');
   }
+  await next();
 });
 
 export const adminOnly = createMiddleware<{ Bindings: Bindings; Variables: Variables }>(async (c, next) => {

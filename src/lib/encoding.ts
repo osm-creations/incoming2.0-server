@@ -4,13 +4,13 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-export function base64UrlToBytes(value: string): Uint8Array {
+export function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
   const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((value.length + 3) % 4);
   const binary = atob(padded);
   return Uint8Array.from(binary, c => c.charCodeAt(0));
 }
 
-export function utf8(value: string): Uint8Array {
+export function utf8(value: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(value);
 }
 

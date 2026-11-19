@@ -1,13 +1,16 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import type { Bindings, Variables } from '../types/env';
 import { authMiddleware, magicianOnly } from '../middleware/core';
 import { apiError, jsonBody, ok } from '../lib/http';
 import { audit } from '../lib/db';
+import { effectiveCallerName, loadUserSettings, withUserSettings } from '../lib/userSettings';
 import { issueCapability } from '../lib/security';
 import { randomPublicId } from '../lib/encoding';
 
-const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
+type WorkerEnv = { Bindings: Bindings; Variables: Variables };
+type WorkerContext = Context<WorkerEnv>;
+const app = new Hono<WorkerEnv>();
 app.use('*', authMiddleware, magicianOnly);
 
 const configSchema = z.object({
@@ -19,27 +22,31 @@ const configSchema = z.object({
 });
 
 const primaryUpdateSchema = z.object({
-  staticText: z.string().max(500)
-});
+  staticText: z.string().max(500).optional(),
+  callerName: z.string().trim().max(120).optional(),
+  injectUserId: z.string().trim().max(128)
+    .regex(/^[A-Za-z0-9_-]*$/, 'Use only letters, numbers, underscores or hyphens for the 11z user ID.')
+    .optional()
+}).refine(v => Object.values(v).some(value => value !== undefined), 'No updates supplied.');
 
-async function ownedConfig(c: any, id: string) {
+async function ownedConfig(c: WorkerContext, id: string) {
   return c.env.DB
     .prepare(`SELECT * FROM clip_configs WHERE id=?1 AND owner_user_id=?2`)
-    .bind(id, c.get('authUser').id)
+    .bind(id, c.get('authUser')!.id)
     .first<any>();
 }
 
-async function invocationUrl(c: any, row: any) {
+async function invocationUrl(c: WorkerContext, row: any) {
   const cap = await issueCapability(
     {
-      publicUserId: c.get('authUser').publicUserId,
+      publicUserId: c.get('authUser')!.publicUserId,
       publicConfigId: row.public_config_id,
       version: row.capability_version
     },
     c.env
   );
   const base = c.env.PUBLIC_BASE_URL.replace(/\/$/, '');
-  return `${base}/c/${encodeURIComponent(c.get('authUser').publicUserId)}/${encodeURIComponent(row.public_config_id)}?t=${encodeURIComponent(cap)}`;
+  return `${base}/c/${encodeURIComponent(c.get('authUser')!.publicUserId)}/${encodeURIComponent(row.public_config_id)}?t=${encodeURIComponent(cap)}`;
 }
 
 /**
@@ -48,8 +55,8 @@ async function invocationUrl(c: any, row: any) {
  * If none exists, create it automatically. The selected primary config is always
  * normalized to DIRECT_NOTES so the iOS app never gets stuck waiting for manual setup.
  */
-async function ensurePrimaryConfig(c: any) {
-  const userId = c.get('authUser').id;
+async function ensurePrimaryConfig(c: WorkerContext) {
+  const userId = c.get('authUser')!.id;
 
   let row = await c.env.DB
     .prepare(`SELECT * FROM clip_configs WHERE owner_user_id=?1 ORDER BY updated_at DESC, created_at DESC LIMIT 1`)
@@ -62,23 +69,27 @@ async function ensurePrimaryConfig(c: any) {
     const id = crypto.randomUUID();
     const publicConfigId = randomPublicId('clip', 7);
 
-    await c.env.DB
+    const created = await c.env.DB
       .prepare(`INSERT INTO clip_configs (
         id, owner_user_id, public_config_id, name, mode, enabled,
         static_text, open_overflow_initially, capability_version, created_at, updated_at
-      ) VALUES (?1, ?2, ?3, ?4, 'DIRECT_NOTES', 1, '', 0, 1, ?5, ?5)`)
+      ) SELECT ?1, ?2, ?3, ?4, 'DIRECT_NOTES', 1, '', 0, 1, ?5, ?5
+      WHERE NOT EXISTS (SELECT 1 FROM clip_configs WHERE owner_user_id=?2)`)
       .bind(id, userId, publicConfigId, 'Incoming App Clip', now)
       .run();
 
-    row = await ownedConfig(c, id);
+    row = await c.env.DB.prepare(`SELECT * FROM clip_configs WHERE owner_user_id=?1
+      ORDER BY updated_at DESC, created_at DESC LIMIT 1`).bind(userId).first<any>();
 
-    await audit(c.env.DB, {
-      actorUserId: userId,
-      action: 'PRIMARY_CLIP_CONFIG_CREATED',
-      targetType: 'CLIP_CONFIG',
-      targetId: id,
-      requestId: c.get('requestId')
-    });
+    if (created.meta.changes) {
+      await audit(c.env.DB, {
+        actorUserId: userId,
+        action: 'PRIMARY_CLIP_CONFIG_CREATED',
+        targetType: 'CLIP_CONFIG',
+        targetId: id,
+        requestId: c.get('requestId')
+      });
+    }
   } else if (
     row.mode !== 'DIRECT_NOTES' ||
     Number(row.enabled) !== 1 ||
@@ -101,13 +112,22 @@ async function ensurePrimaryConfig(c: any) {
   return row;
 }
 
+async function primaryResponse(c: WorkerContext, row: any) {
+  const settings = await loadUserSettings(c.env.DB, c.get('authUser')!.id);
+  return ok(c, {
+    config: {
+      ...row,
+      caller_name: effectiveCallerName(settings?.caller_name, row.static_text),
+      inject_user_id: settings?.inject_user_id ?? null
+    },
+    invocationUrl: await invocationUrl(c, row)
+  });
+}
+
 // IMPORTANT: primary routes must be declared before /:id routes.
 app.get('/primary', async c => {
   const row = await ensurePrimaryConfig(c);
-  return ok(c, {
-    config: row,
-    invocationUrl: await invocationUrl(c, row)
-  });
+  return primaryResponse(c, row);
 });
 
 app.patch('/primary', async c => {
@@ -117,13 +137,22 @@ app.patch('/primary', async c => {
   const row = await ensurePrimaryConfig(c);
   const now = new Date().toISOString();
 
-  await c.env.DB
-    .prepare(`UPDATE clip_configs
-      SET static_text=?2, mode='DIRECT_NOTES', enabled=1,
-          open_overflow_initially=0, updated_at=?3
-      WHERE id=?1 AND owner_user_id=?4`)
-    .bind(row.id, body.data.staticText, now, c.get('authUser').id)
-    .run();
+  const { staticText, callerName, injectUserId } = body.data;
+  const ownerId = c.get('authUser')!.id;
+  const db = c.env.DB;
+  const previousCaller = effectiveCallerName(null, row.static_text) ?? '';
+
+  await withUserSettings(db, () => db.batch([
+    db.prepare(`INSERT INTO incoming_user_settings (user_id, caller_name, inject_user_id)
+      VALUES (?1, COALESCE(?2, ?3), NULLIF(?4, ''))
+      ON CONFLICT(user_id) DO UPDATE SET
+        caller_name=COALESCE(?2, incoming_user_settings.caller_name, ?3),
+        inject_user_id=CASE WHEN ?4 IS NULL THEN incoming_user_settings.inject_user_id ELSE NULLIF(?4, '') END`)
+      .bind(ownerId, callerName ?? null, staticText === undefined ? null : previousCaller, injectUserId ?? null),
+    db.prepare(`UPDATE clip_configs SET static_text=COALESCE(?2,static_text), mode='DIRECT_NOTES',
+      enabled=1, open_overflow_initially=0, updated_at=?3 WHERE id=?1 AND owner_user_id=?4`)
+      .bind(row.id, staticText ?? null, now, ownerId)
+  ]));
 
   const updated = await ownedConfig(c, row.id);
   if (!updated) {
@@ -131,17 +160,14 @@ app.patch('/primary', async c => {
   }
 
   await audit(c.env.DB, {
-    actorUserId: c.get('authUser').id,
+    actorUserId: c.get('authUser')!.id,
     action: 'PRIMARY_CLIP_CONFIG_UPDATED',
     targetType: 'CLIP_CONFIG',
     targetId: updated.id,
     requestId: c.get('requestId')
   });
 
-  return ok(c, {
-    config: updated,
-    invocationUrl: await invocationUrl(c, updated)
-  });
+  return primaryResponse(c, updated);
 });
 
 app.get('/', async c => {

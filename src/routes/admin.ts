@@ -4,6 +4,7 @@ import type { Bindings, Variables } from '../types/env';
 import { apiError, jsonBody, ok } from '../lib/http';
 import { adminCsrf, adminOnly, authMiddleware } from '../middleware/core';
 import { audit } from '../lib/db';
+import { withUserSettings } from '../lib/userSettings';
 import { hashPassword } from '../lib/security';
 import { randomPublicId } from '../lib/encoding';
 
@@ -79,6 +80,29 @@ app.patch('/users/:id', async c => {
     if (body.data.publicUserId) await c.env.DB.prepare(`UPDATE users SET public_user_id=?2, updated_at=?3 WHERE id=?1`).bind(c.req.param('id'), body.data.publicUserId, new Date().toISOString()).run();
   } catch { return apiError(c, 409, 'CONFLICT', 'Email or public user ID already in use.'); }
   await audit(c.env.DB, { actorUserId: c.get('authUser')!.id, action: 'ADMIN_USER_UPDATED', targetType: 'USER', targetId: c.req.param('id'), requestId: c.get('requestId') });
+  return ok(c, { updated: true });
+});
+
+const resetSchema = createSchema.pick({ password: true });
+app.post('/users/:id/reset-password', async c => {
+  const body = await jsonBody(c, resetSchema);
+  if ('error' in body) return body.error;
+  const userId = c.req.param('id');
+  const now = new Date().toISOString();
+  const passwordHash = await hashPassword(body.data.password);
+  const db = c.env.DB;
+  const [updated] = await withUserSettings(db, () => db.batch([
+    db.prepare(`UPDATE users SET password_hash=?2, force_password_change=0, updated_at=?3 WHERE id=?1`)
+      .bind(userId, passwordHash, now),
+    db.prepare(`INSERT INTO incoming_user_settings (user_id, credential_version)
+      SELECT id, 1 FROM users WHERE id=?1
+      ON CONFLICT(user_id) DO UPDATE SET credential_version=credential_version+1`).bind(userId),
+    db.prepare(`UPDATE auth_sessions SET revoked_at=?2 WHERE user_id=?1 AND revoked_at IS NULL`).bind(userId, now),
+    db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, target_type, target_id, request_id, created_at)
+      SELECT ?1, ?2, 'ADMIN_PASSWORD_RESET', 'USER', id, ?3, ?4 FROM users WHERE id=?5`)
+      .bind(crypto.randomUUID(), c.get('authUser')!.id, c.get('requestId'), now, userId)
+  ]));
+  if (!updated?.meta.changes) return apiError(c, 404, 'NOT_FOUND', 'User not found.');
   return ok(c, { updated: true });
 });
 

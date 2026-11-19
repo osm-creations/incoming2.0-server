@@ -6,7 +6,7 @@ export function ok<T>(c: Context<{ Bindings: Bindings; Variables: Variables }>, 
   return c.json({ data }, status);
 }
 
-export function apiError(c: Context<{ Bindings: Bindings; Variables: Variables }>, status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500, code: string, message: string) {
+export function apiError(c: Context<{ Bindings: Bindings; Variables: Variables }>, status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 502, code: string, message: string) {
   return c.json({ error: { code, message, requestId: c.get('requestId') } }, status);
 }
 

@@ -13,7 +13,7 @@ import type { Bindings, Variables } from './types/env';
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 app.use('*', requestIdMiddleware);
-app.use('*', secureHeaders({ contentSecurityPolicy: false }));
+app.use('*', secureHeaders());
 app.use('*', async (c, next) => {
   const allowed = new Set((c.env.ALLOWED_ORIGINS ?? '').split(',').map(v => v.trim()).filter(Boolean));
   return cors({

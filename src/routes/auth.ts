@@ -37,16 +37,18 @@ app.post('/login', async c => {
   await clearLoginFailures(c.env.DB, rateKey);
 
   const user = toAuthUser(row);
-  const accessToken = await issueAccessToken(user, c.env);
+  const accessToken = await issueAccessToken(user, c.env, row.credential_version);
   const refreshToken = newRefreshToken();
   const refreshHash = await hashOpaqueToken(refreshToken, c.env.TOKEN_PEPPER);
   const now = new Date();
   const refreshExpires = new Date(Date.now() + Number(c.env.REFRESH_TOKEN_TTL_SECONDS || '2592000') * 1000);
-  await c.env.DB.batch([
-    c.env.DB.prepare(`INSERT INTO auth_sessions (id, user_id, refresh_token_hash, token_family_id, expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`)
-      .bind(crypto.randomUUID(), user.id, refreshHash, crypto.randomUUID(), refreshExpires.toISOString(), now.toISOString()),
+  const [created] = await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO auth_sessions (id, user_id, refresh_token_hash, token_family_id, expires_at, created_at)
+      SELECT ?1, ?2, ?3, ?4, ?5, ?6 FROM users WHERE id=?2 AND password_hash=?7 AND status='ACTIVE'`)
+      .bind(crypto.randomUUID(), user.id, refreshHash, crypto.randomUUID(), refreshExpires.toISOString(), now.toISOString(), row.password_hash),
     c.env.DB.prepare(`UPDATE users SET last_login_at = ?2, updated_at = ?2 WHERE id = ?1`).bind(user.id, now.toISOString())
   ]);
+  if (!created?.meta.changes) return apiError(c, 401, 'INVALID_CREDENTIALS', 'Please sign in again.');
   await audit(c.env.DB, { actorUserId: user.id, action: 'AUTH_LOGIN', targetType: 'USER', targetId: user.id, requestId: c.get('requestId') });
 
   if (body.data.client === 'web') {
@@ -80,13 +82,16 @@ app.post('/refresh', async c => {
   const newHash = await hashOpaqueToken(newRefresh, c.env.TOKEN_PEPPER);
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + Number(c.env.REFRESH_TOKEN_TTL_SECONDS || '2592000') * 1000).toISOString();
-  await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE auth_sessions SET revoked_at = ?2, last_used_at = ?2 WHERE id = ?1`).bind(session.id, now),
-    c.env.DB.prepare(`INSERT INTO auth_sessions (id, user_id, refresh_token_hash, token_family_id, expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`)
-      .bind(crypto.randomUUID(), row.id, newHash, session.token_family_id, expiresAt, now)
+  const [rotated] = await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO auth_sessions (id, user_id, refresh_token_hash, token_family_id, expires_at, created_at)
+      SELECT ?1, user_id, ?2, token_family_id, ?3, ?4 FROM auth_sessions
+      WHERE id=?5 AND revoked_at IS NULL AND expires_at>?4`)
+      .bind(crypto.randomUUID(), newHash, expiresAt, now, session.id),
+    c.env.DB.prepare(`UPDATE auth_sessions SET revoked_at=?2, last_used_at=?2 WHERE id=?1 AND revoked_at IS NULL`).bind(session.id, now)
   ]);
+  if (!rotated?.meta.changes) return apiError(c, 401, 'INVALID_REFRESH', 'Session expired.');
   const user = toAuthUser(row);
-  const accessToken = await issueAccessToken(user, c.env);
+  const accessToken = await issueAccessToken(user, c.env, row.credential_version);
 
   if (!bodyToken) {
     const secure = new URL(c.req.url).protocol === 'https:';

@@ -11,6 +11,8 @@ keep_vars = true
 # Runtime configuration (safe to commit; these are NOT secrets).
 # Replace example domains / Apple Team ID before production deployment.
 [vars]
+# Use the exact User ID or email of the account that opens the plain presentation.
+PLAIN_PRESENTATION_ACCOUNT = "105"
 PUBLIC_BASE_URL = "https://incoming2-0-server.incoming-osmcreations.workers.dev"
 ALLOWED_ORIGINS = "https://incoming2-0-admin.incoming-osmcreations.workers.dev"
 ACCESS_TOKEN_TTL_SECONDS = "900"

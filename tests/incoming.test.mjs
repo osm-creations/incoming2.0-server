@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import { injectSelectionUrl } from '../src/lib/injectSelection.ts';
+import { usesPlainPresentation } from '../src/lib/userSettings.ts';
 
 let worker;
 let database;
@@ -40,6 +41,7 @@ beforeAll(async () => {
     bindings: {
       PUBLIC_BASE_URL: 'https://test.local',
       INJECT_SELECTION_URL_TEMPLATE: 'https://selection.example.org/current?user={userId}',
+      PLAIN_PRESENTATION_ACCOUNT: ' Performer@Example.ORG ',
       SETUP_SECRET: setupSecret,
       TOKEN_PEPPER: randomUUID(),
       JWT_SECRET: randomUUID(),
@@ -76,6 +78,30 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => { await worker?.dispose(); });
+
+test('selects the same presentation for the owner and their signed App Clip link', async () => {
+  for (const [headers, plain] of [[performerHeaders, true], [adminHeaders, undefined]]) {
+    const { data } = await request('/clip-configs/primary', { headers });
+    expect(data.config.usesPlainPresentation).toBe(plain);
+    const url = new URL(data.invocationUrl);
+    const [, , publicUserId, publicConfigId] = url.pathname.split('/');
+    const { data: clip } = await request('/app-clip/bootstrap', {
+      method: 'POST', status: 201,
+      body: { publicUserId, publicConfigId, capability: url.searchParams.get('t') }
+    });
+    expect(clip.configuration.usesPlainPresentation).toBe(plain);
+    expect(JSON.stringify(clip.configuration)).not.toContain('@');
+  }
+});
+
+test('matches only an exact public user ID or normalized email', () => {
+  const match = account => usesPlainPresentation(account, 'Review_A', 'review@example.org');
+  expect(match(' Review_A ')).toBe(true);
+  expect(match(' REVIEW@example.org ')).toBe(true);
+  for (const account of [undefined, ' ', 'review_a', 'Review', 'review@example.com', '*']) {
+    expect(match(account)).toBeUndefined();
+  }
+});
 
 test('keeps existing notes, manual names and 11z previews independent', async () => {
   const path = '/clip-configs/primary';

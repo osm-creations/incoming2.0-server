@@ -2,6 +2,7 @@ export type Bindings = {
   DB: D1Database;
   PUBLIC_BASE_URL: string;
   INJECT_SELECTION_URL_TEMPLATE?: string;
+  PLAIN_PRESENTATION_ACCOUNT?: string;
   ALLOWED_ORIGINS: string;
   ACCESS_TOKEN_TTL_SECONDS: string;
   REFRESH_TOKEN_TTL_SECONDS: string;

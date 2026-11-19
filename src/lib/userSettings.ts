@@ -23,6 +23,14 @@ export type UserSettings = {
   inject_user_id: string | null;
 };
 
+export function usesPlainPresentation(configuredAccount: string | undefined, publicUserId: string, email: string): true | undefined {
+  const account = configuredAccount?.trim();
+  if (!account) return undefined;
+  // Emails are stored in lowercase. Public IDs are unique with case-sensitive comparison.
+  const matches = account.includes('@') ? account.toLowerCase() === email : account === publicUserId;
+  return matches || undefined;
+}
+
 export function effectiveCallerName(stored: string | null | undefined, note: string | null): string | null {
   // SQL NULL denotes a legacy account. An explicit empty string clears the name.
   if (stored != null) return stored || null;

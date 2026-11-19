@@ -4,7 +4,7 @@ import type { Bindings, Variables } from '../types/env';
 import { authMiddleware, magicianOnly } from '../middleware/core';
 import { apiError, jsonBody, ok } from '../lib/http';
 import { audit } from '../lib/db';
-import { effectiveCallerName, loadUserSettings, withUserSettings } from '../lib/userSettings';
+import { effectiveCallerName, loadUserSettings, usesPlainPresentation, withUserSettings } from '../lib/userSettings';
 import { issueCapability } from '../lib/security';
 import { randomPublicId } from '../lib/encoding';
 
@@ -113,10 +113,12 @@ async function ensurePrimaryConfig(c: WorkerContext) {
 }
 
 async function primaryResponse(c: WorkerContext, row: any) {
-  const settings = await loadUserSettings(c.env.DB, c.get('authUser')!.id);
+  const owner = c.get('authUser')!;
+  const settings = await loadUserSettings(c.env.DB, owner.id);
   return ok(c, {
     config: {
       ...row,
+      usesPlainPresentation: usesPlainPresentation(c.env.PLAIN_PRESENTATION_ACCOUNT, owner.publicUserId, owner.email),
       caller_name: effectiveCallerName(settings?.caller_name, row.static_text),
       inject_user_id: settings?.inject_user_id ?? null
     },

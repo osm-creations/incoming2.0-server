@@ -5,7 +5,7 @@ import { apiError, jsonBody, ok } from '../lib/http';
 import { hashOpaqueToken, newSessionToken, verifyCapability } from '../lib/security';
 import { randomPublicId } from '../lib/encoding';
 import { injectSelectionUrl } from '../lib/injectSelection';
-import { effectiveCallerName, loadUserSettings } from '../lib/userSettings';
+import { effectiveCallerName, loadUserSettings, usesPlainPresentation } from '../lib/userSettings';
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -15,7 +15,7 @@ app.post('/bootstrap', async c => {
   if ('error' in body) return body.error;
   const cap = await verifyCapability(body.data.capability, c.env);
   if (!cap || cap.publicUserId !== body.data.publicUserId || cap.publicConfigId !== body.data.publicConfigId) return apiError(c, 404, 'EXPERIENCE_UNAVAILABLE', 'This experience is unavailable.');
-  const row = await c.env.DB.prepare(`SELECT cc.*, u.public_user_id, u.status user_status FROM clip_configs cc JOIN users u ON u.id=cc.owner_user_id
+  const row = await c.env.DB.prepare(`SELECT cc.*, u.public_user_id, u.email owner_email, u.status user_status FROM clip_configs cc JOIN users u ON u.id=cc.owner_user_id
     WHERE cc.public_config_id=?1 AND u.public_user_id=?2 LIMIT 1`).bind(body.data.publicConfigId, body.data.publicUserId).first();
   if (!row || row.user_status !== 'ACTIVE' || !row.enabled || row.capability_version !== cap.version) return apiError(c, 404, 'EXPERIENCE_UNAVAILABLE', 'This experience is unavailable.');
 
@@ -38,6 +38,7 @@ app.post('/bootstrap', async c => {
       staticText: row.static_text,
       callerName: effectiveCallerName(settings?.caller_name, row.static_text as string | null),
       hasInjectUserId: Boolean(settings?.inject_user_id),
+      usesPlainPresentation: usesPlainPresentation(c.env.PLAIN_PRESENTATION_ACCOUNT, String(row.public_user_id), String(row.owner_email)),
       openOverflowInitially: Boolean(row.open_overflow_initially),
       options: options.results.map((o: any) => ({ id: o.id, value: o.value }))
     }

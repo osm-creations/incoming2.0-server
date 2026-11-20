@@ -10,6 +10,7 @@ export type UserRow = {
   role: 'ADMIN' | 'MAGICIAN';
   status: 'ACTIVE' | 'DISABLED';
   force_password_change: number;
+  temporary_password_expires_at: string | null;
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
@@ -25,7 +26,14 @@ export function toAuthUser(row: UserRow): AuthUser {
   };
 }
 
-const authUserQuery = `SELECT u.*, COALESCE(s.credential_version, 0) AS credential_version
+export function hasActiveCredentials(row: UserRow) {
+  return row.status === 'ACTIVE' && (!row.temporary_password_expires_at || Date.parse(row.temporary_password_expires_at) > Date.now());
+}
+
+const authUserQuery = `SELECT u.*, COALESCE(s.credential_version, 0) AS credential_version,
+  CASE WHEN u.force_password_change=1 THEN
+    (SELECT expires_at FROM password_reset_tokens WHERE id='welcome:'||u.id)
+  END AS temporary_password_expires_at
   FROM users u LEFT JOIN incoming_user_settings s ON s.user_id=u.id`;
 
 export async function findUserByLogin(db: D1Database, login: string): Promise<UserRow | null> {

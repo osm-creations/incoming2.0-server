@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
+import { resetSite } from './lib/resetSite';
 import auth from './routes/auth';
 import admin from './routes/admin';
 import setup from './routes/setup';
@@ -15,6 +16,18 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 app.use('*', requestIdMiddleware);
 app.use('*', secureHeaders());
 app.use('*', async (c, next) => {
+  const path = c.req.path;
+  if (path === '/api/v1/auth/forgot-password' || path === '/api/v1/auth/reset-password') {
+    const origins = new Set((c.env.CORS_ALLOWED_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean));
+    const site = resetSite(c.env);
+    if (site) origins.add(site.origin);
+    c.header('Cache-Control', 'no-store');
+    return cors({
+      origin: origins.has('*') ? '*' : origin => origins.has(origin) ? origin : '',
+      allowHeaders: ['Content-Type'],
+      allowMethods: ['POST', 'OPTIONS']
+    })(c, next);
+  }
   const allowed = new Set((c.env.ALLOWED_ORIGINS ?? '').split(',').map(v => v.trim()).filter(Boolean));
   return cors({
     origin: origin => allowed.has(origin) ? origin : '',
@@ -25,6 +38,15 @@ app.use('*', async (c, next) => {
 });
 
 app.get('/health', c => c.json({ ok: true, service: 'incoming2-api' }));
+app.get('/forgot-password', c => {
+  const destination = resetSite(c.env);
+  if (!destination) {
+    return c.text('Password reset is temporarily unavailable.', 503);
+  }
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  return c.redirect(destination.href, 302);
+});
 app.get('/.well-known/apple-app-site-association', c => {
   c.header('Content-Type', 'application/json');
   c.header('Cache-Control', 'public, max-age=3600');
@@ -38,7 +60,7 @@ app.get('/.well-known/apple-app-site-association', c => {
   });
 });
 
-app.get('/c/:publicUserId/:publicConfigId', c => {
+app.get('/c/:key/:legacyConfig?', c => {
   c.header('Content-Type', 'text/html; charset=utf-8');
   return c.html(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Incoming</title></head><body style="margin:0;background:#05070d;color:#eef4ff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;padding:32px"><div style="font-size:64px">↘</div><h1>Incoming</h1><p style="color:#9aa9c0">Open this experience on a supported iPhone.</p></main></body></html>`);
 });

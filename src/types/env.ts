@@ -4,6 +4,18 @@ export type Bindings = {
   INJECT_SELECTION_URL_TEMPLATE?: string;
   PLAIN_PRESENTATION_ACCOUNT?: string;
   ALLOWED_ORIGINS: string;
+  CORS_ALLOWED_ORIGINS?: string;
+  RESET_PUBLIC_URL: string;
+  SMTP_HOST?: string;
+  SMTP_PORT?: string;
+  SMTP_SECURITY?: string;
+  SMTP_FROM_EMAIL?: string;
+  SMTP_FROM_NAME?: string;
+  SMTP_EHLO_DOMAIN?: string;
+  SMTP_AUTH_METHOD?: string;
+  SMTP_ALLOW_DIFFERENT_FROM?: string;
+  SMTP_USERNAME?: string;
+  SMTP_PASSWORD?: string;
   ACCESS_TOKEN_TTL_SECONDS: string;
   REFRESH_TOKEN_TTL_SECONDS: string;
   APP_CLIP_SESSION_TTL_SECONDS: string;

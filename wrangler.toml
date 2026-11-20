@@ -14,6 +14,15 @@ keep_vars = true
 # Use the exact User ID or email of the account that opens the plain presentation.
 PLAIN_PRESENTATION_ACCOUNT = "105"
 PUBLIC_BASE_URL = "https://incoming2-0-server.incoming-osmcreations.workers.dev"
+# The password recovery endpoints accept requests without cookies. All other
+# endpoints keep the existing ALLOWED_ORIGINS checks for authenticated clients.
+CORS_ALLOWED_ORIGINS = "*"
+# Optional dashboard Text override: RESET_PUBLIC_URL. Defaults to
+# https://incoming-2-0-password-reset.incoming-osmcreations.workers.dev/
+# SMTP Text variables are optional dashboard overrides (kept across Git deployments).
+# Defaults: SMTP_HOST=smtpout.secureserver.net, SMTP_PORT=465, SMTP_SECURITY=tls
+# SMTP_FROM_EMAIL=support@osmcreations.com, SMTP_FROM_NAME=Incoming,
+# SMTP_EHLO_DOMAIN=osmcreations.com, SMTP_AUTH_METHOD=auto, SMTP_ALLOW_DIFFERENT_FROM=false.
 ALLOWED_ORIGINS = "https://incoming2-0-admin.incoming-osmcreations.workers.dev"
 ACCESS_TOKEN_TTL_SECONDS = "900"
 REFRESH_TOKEN_TTL_SECONDS = "2592000"
@@ -32,3 +41,5 @@ database_id = "4e9fa1c0-fc36-43f6-b441-80e8ffb444d5"
 # TOKEN_PEPPER
 # CAPABILITY_SIGNING_SECRET
 # SETUP_SECRET
+# SMTP_USERNAME (full sending mailbox)
+# SMTP_PASSWORD

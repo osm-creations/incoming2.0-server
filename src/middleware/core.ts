@@ -1,7 +1,7 @@
 import { createMiddleware } from 'hono/factory';
 import { getCookie } from 'hono/cookie';
 import { verifyAccessToken } from '../lib/security';
-import { findUserById, toAuthUser } from '../lib/db';
+import { findUserById, hasActiveCredentials, toAuthUser } from '../lib/db';
 import { apiError } from '../lib/http';
 import type { Bindings, Variables } from '../types/env';
 
@@ -20,7 +20,7 @@ export const authMiddleware = createMiddleware<{ Bindings: Bindings; Variables: 
     const sub = typeof payload.sub === 'string' ? payload.sub : null;
     if (!sub) return apiError(c, 401, 'INVALID_TOKEN', 'Authentication required.');
     const row = await findUserById(c.env.DB, sub);
-    if (!row || row.status !== 'ACTIVE') return apiError(c, 401, 'ACCOUNT_UNAVAILABLE', 'Authentication required.');
+    if (!row || !hasActiveCredentials(row)) return apiError(c, 401, 'ACCOUNT_UNAVAILABLE', 'Authentication required.');
     if ((payload.credentialVersion ?? 0) !== row.credential_version) {
       return apiError(c, 401, 'INVALID_TOKEN', 'Please sign in again.');
     }

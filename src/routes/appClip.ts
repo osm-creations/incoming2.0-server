@@ -4,20 +4,37 @@ import type { Bindings, Variables } from '../types/env';
 import { apiError, jsonBody, ok } from '../lib/http';
 import { hashOpaqueToken, newSessionToken, verifyCapability } from '../lib/security';
 import { randomPublicId } from '../lib/encoding';
+import { resolveShortCapability } from '../lib/shortLinks';
 import { injectSelectionUrl } from '../lib/injectSelection';
 import { defaultRevealDelaySeconds, effectiveCallerName, loadUserSettings, usesPlainPresentation } from '../lib/userSettings';
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
-const bootstrapSchema = z.object({ publicUserId: z.string().min(3).max(100), publicConfigId: z.string().min(3).max(100), capability: z.string().min(20).max(2000) });
+const bootstrapSchema = z.union([
+  z.object({ shortToken: z.string().regex(/^[A-Za-z0-9_-]{22}$/) }).strict(),
+  z.object({ publicUserId: z.string().min(3).max(100), publicConfigId: z.string().min(3).max(100), capability: z.string().min(20).max(2000) })
+]);
+
+async function bootstrapConfig(env: Bindings, input: z.infer<typeof bootstrapSchema>) {
+  const config = `SELECT cc.*, u.public_user_id, u.email owner_email, u.status user_status
+    FROM clip_configs cc JOIN users u ON u.id=cc.owner_user_id`;
+  if ('shortToken' in input) {
+    const identity = await resolveShortCapability(env, input.shortToken);
+    if (!identity) return null;
+    return env.DB.prepare(config + ' WHERE cc.id=?1 AND cc.capability_version=?2')
+      .bind(identity.configId, identity.version).first();
+  }
+  const cap = await verifyCapability(input.capability, env);
+  if (!cap || cap.publicUserId !== input.publicUserId || cap.publicConfigId !== input.publicConfigId) return null;
+  return env.DB.prepare(config + ' WHERE cc.public_config_id=?1 AND u.public_user_id=?2 AND cc.capability_version=?3')
+    .bind(cap.publicConfigId, cap.publicUserId, cap.version).first();
+}
+
 app.post('/bootstrap', async c => {
   const body = await jsonBody(c, bootstrapSchema);
   if ('error' in body) return body.error;
-  const cap = await verifyCapability(body.data.capability, c.env);
-  if (!cap || cap.publicUserId !== body.data.publicUserId || cap.publicConfigId !== body.data.publicConfigId) return apiError(c, 404, 'EXPERIENCE_UNAVAILABLE', 'This experience is unavailable.');
-  const row = await c.env.DB.prepare(`SELECT cc.*, u.public_user_id, u.email owner_email, u.status user_status FROM clip_configs cc JOIN users u ON u.id=cc.owner_user_id
-    WHERE cc.public_config_id=?1 AND u.public_user_id=?2 LIMIT 1`).bind(body.data.publicConfigId, body.data.publicUserId).first();
-  if (!row || row.user_status !== 'ACTIVE' || !row.enabled || row.capability_version !== cap.version) return apiError(c, 404, 'EXPERIENCE_UNAVAILABLE', 'This experience is unavailable.');
+  const row = await bootstrapConfig(c.env, body.data);
+  if (!row || row.user_status !== 'ACTIVE' || !row.enabled) return apiError(c, 404, 'EXPERIENCE_UNAVAILABLE', 'This experience is unavailable.');
 
   const settings = await loadUserSettings(c.env.DB, String(row.owner_user_id));
   const options = row.mode === 'MENU' ? await c.env.DB.prepare(`SELECT id, value, display_order FROM clip_menu_options WHERE config_id=?1 AND enabled=1 ORDER BY display_order`).bind(row.id).all() : { results: [] };
@@ -26,9 +43,12 @@ app.post('/bootstrap', async c => {
   const publicSessionId = randomPublicId('sess', 10);
   const now = new Date();
   const expiresAt = new Date(Date.now() + Number(c.env.APP_CLIP_SESSION_TTL_SECONDS || '1200') * 1000);
-  await c.env.DB.prepare(`INSERT INTO app_clip_sessions (id, public_session_id, config_id, owner_user_id, session_token_hash, status, latest_revision, expires_at, last_seen_at, created_at)
-    VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE', 0, ?6, ?7, ?7)`)
-    .bind(crypto.randomUUID(), publicSessionId, row.id, row.owner_user_id, sessionHash, expiresAt.toISOString(), now.toISOString()).run();
+  const session = await c.env.DB.prepare(`INSERT INTO app_clip_sessions (id, public_session_id, config_id, owner_user_id, session_token_hash, status, latest_revision, expires_at, last_seen_at, created_at)
+    SELECT ?1, ?2, cc.id, cc.owner_user_id, ?5, 'ACTIVE', 0, ?6, ?7, ?7
+    FROM clip_configs cc JOIN users u ON u.id=cc.owner_user_id
+    WHERE cc.id=?3 AND cc.owner_user_id=?4 AND cc.capability_version=?8 AND cc.enabled=1 AND u.status='ACTIVE'`)
+    .bind(crypto.randomUUID(), publicSessionId, row.id, row.owner_user_id, sessionHash, expiresAt.toISOString(), now.toISOString(), row.capability_version).run();
+  if (!session.meta.changes) return apiError(c, 404, 'EXPERIENCE_UNAVAILABLE', 'This experience is unavailable.');
 
   c.header('Cache-Control', 'private, no-store');
   return ok(c, {

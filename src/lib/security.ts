@@ -54,10 +54,16 @@ export async function verifyAccessToken(token: string, env: Bindings): Promise<R
   return verify(token, env.JWT_SECRET, 'HS256') as Promise<Record<string, unknown>>;
 }
 
-async function hmacSignature(payload: string, secret: string): Promise<string> {
+export async function hmacSignature(payload: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', utf8(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const signature = await crypto.subtle.sign('HMAC', key, utf8(payload));
   return bytesToBase64Url(new Uint8Array(signature));
+}
+
+// Keep the printed tag stable until the performer rotates this configuration.
+export async function shortCapability(configId: string, version: number, env: Bindings): Promise<string> {
+  const signature = await hmacSignature(JSON.stringify(['clip-short-v1', configId, version]), env.CAPABILITY_SIGNING_SECRET);
+  return signature.slice(0, 22);
 }
 
 export async function issueCapability(input: { publicUserId: string; publicConfigId: string; version: number }, env: Bindings): Promise<string> {

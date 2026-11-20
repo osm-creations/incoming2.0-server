@@ -6,6 +6,7 @@ import { apiError, jsonBody, ok } from '../lib/http';
 import { audit } from '../lib/db';
 import { defaultRevealDelaySeconds, effectiveCallerName, loadUserSettings, usesPlainPresentation, withUserSettings } from '../lib/userSettings';
 import { issueCapability } from '../lib/security';
+import { shortInvocationUrl } from '../lib/shortLinks';
 import { randomPublicId } from '../lib/encoding';
 
 type WorkerEnv = { Bindings: Bindings; Variables: Variables };
@@ -125,7 +126,8 @@ async function primaryResponse(c: WorkerContext, row: any) {
       reveal_delay_seconds: settings?.reveal_delay_seconds ?? defaultRevealDelaySeconds,
       inject_user_id: settings?.inject_user_id ?? null
     },
-    invocationUrl: await invocationUrl(c, row)
+    invocationUrl: await invocationUrl(c, row),
+    shortInvocationUrl: await shortInvocationUrl(c.env, row.id, row.capability_version)
   });
 }
 
@@ -230,7 +232,8 @@ app.post('/', async c => {
 
   return ok(c, {
     config: row,
-    invocationUrl: await invocationUrl(c, row)
+    invocationUrl: await invocationUrl(c, row),
+    shortInvocationUrl: await shortInvocationUrl(c.env, row.id, row.capability_version)
   }, 201);
 });
 
@@ -246,7 +249,8 @@ app.get('/:id', async c => {
   return ok(c, {
     config: row,
     options: options.results,
-    invocationUrl: await invocationUrl(c, row)
+    invocationUrl: await invocationUrl(c, row),
+    shortInvocationUrl: await shortInvocationUrl(c.env, row.id, row.capability_version)
   });
 });
 
@@ -327,7 +331,10 @@ app.post('/:id/rotate-link', async c => {
     requestId: c.get('requestId')
   });
 
-  return ok(c, { invocationUrl: await invocationUrl(c, updated) });
+  return ok(c, {
+    invocationUrl: await invocationUrl(c, updated),
+    shortInvocationUrl: await shortInvocationUrl(c.env, updated.id, updated.capability_version)
+  });
 });
 
 const optionSchema = z.object({

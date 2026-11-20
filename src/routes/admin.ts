@@ -6,7 +6,8 @@ import { adminCsrf, adminOnly, authMiddleware } from '../middleware/core';
 import { audit } from '../lib/db';
 import { withUserSettings } from '../lib/userSettings';
 import { hashPassword } from '../lib/security';
-import { randomPublicId } from '../lib/encoding';
+import { newPasswordTicket, sendWelcome } from '../lib/passwordRecovery';
+import { randomPublicId, randomToken } from '../lib/encoding';
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 app.use('*', authMiddleware, adminOnly, adminCsrf);
@@ -22,7 +23,7 @@ const createSchema = z.object({
       .optional()
   ),
   email: z.string().trim().email('Enter a valid email address.').max(254, 'Email is too long.'),
-  password: z.string().min(12, 'Temporary password must be at least 12 characters.').max(200, 'Password is too long.'),
+  password: z.string().min(12, 'Temporary password must be at least 12 characters.').max(200, 'Password is too long.').optional(),
   role: z.enum(['ADMIN', 'MAGICIAN'], { message: 'Role must be ADMIN or MAGICIAN.' }).default('MAGICIAN')
 });
 
@@ -52,15 +53,31 @@ app.post('/users', async c => {
   const publicUserId = body.data.publicUserId ?? randomPublicId('incoming', 7);
   const email = body.data.email.trim().toLowerCase();
   const now = new Date().toISOString();
+  const password = body.data.password ?? randomToken(20);
+  const ticket = await newPasswordTicket(c.env, { id, email, credential_version: 0 }, true);
+  const passwordHash = await hashPassword(password);
+  const db = c.env.DB;
   try {
-    await c.env.DB.prepare(`INSERT INTO users (id, public_user_id, email, password_hash, role, status, force_password_change, created_at, updated_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE', 1, ?6, ?6)`)
-      .bind(id, publicUserId, email, await hashPassword(body.data.password), body.data.role, now).run();
-  } catch {
+    await db.batch([
+      db.prepare(`INSERT INTO users (id, public_user_id, email, password_hash, role, status, force_password_change, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE', 1, ?6, ?6)`).bind(id, publicUserId, email, passwordHash, body.data.role, now),
+      ticket.statement,
+      db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, target_type, target_id, metadata_json, request_id, created_at)
+        VALUES (?1, ?2, 'ADMIN_USER_CREATED', 'USER', ?3, ?4, ?5, ?6)`)
+        .bind(crypto.randomUUID(), c.get('authUser')!.id, id, JSON.stringify({ role: body.data.role }), c.get('requestId'), now)
+    ]);
+  } catch (error) {
+    if (!/UNIQUE constraint failed: users\.(email|public_user_id)/i.test(String(error))) throw error;
     return apiError(c, 409, 'USER_EXISTS', 'A user with that email or public user ID already exists.');
   }
-  await audit(c.env.DB, { actorUserId: c.get('authUser')!.id, action: 'ADMIN_USER_CREATED', targetType: 'USER', targetId: id, metadata: { role: body.data.role }, requestId: c.get('requestId') });
-  return ok(c, { id, publicUserId, email, role: body.data.role, status: 'ACTIVE' }, 201);
+  let welcomeEmailSent = false;
+  try {
+    await sendWelcome(c.env, email, publicUserId, password, ticket.token);
+    welcomeEmailSent = true;
+  } catch {
+    console.error(JSON.stringify({ event: 'welcome_email_failed', requestId: c.get('requestId') }));
+  }
+  return ok(c, { id, publicUserId, email, role: body.data.role, status: 'ACTIVE', welcomeEmailSent }, 201);
 });
 
 app.get('/users/:id', async c => {
@@ -76,14 +93,28 @@ app.patch('/users/:id', async c => {
   const existing = await c.env.DB.prepare(`SELECT id FROM users WHERE id=?1`).bind(c.req.param('id')).first();
   if (!existing) return apiError(c, 404, 'NOT_FOUND', 'User not found.');
   try {
-    if (body.data.email) await c.env.DB.prepare(`UPDATE users SET email=?2, updated_at=?3 WHERE id=?1`).bind(c.req.param('id'), body.data.email.trim().toLowerCase(), new Date().toISOString()).run();
-    if (body.data.publicUserId) await c.env.DB.prepare(`UPDATE users SET public_user_id=?2, updated_at=?3 WHERE id=?1`).bind(c.req.param('id'), body.data.publicUserId, new Date().toISOString()).run();
+    const db = c.env.DB;
+    const email = body.data.email?.trim().toLowerCase() ?? null;
+    const now = new Date().toISOString();
+    await withUserSettings(db, () => db.batch([
+      db.prepare(`INSERT INTO incoming_user_settings (user_id, credential_version)
+        SELECT id,1 FROM users WHERE id=?1 AND email<>?2
+        ON CONFLICT(user_id) DO UPDATE SET credential_version=credential_version+1`).bind(c.req.param('id'), email),
+      db.prepare(`UPDATE auth_sessions SET revoked_at=?3 WHERE user_id=?1 AND revoked_at IS NULL
+        AND EXISTS (SELECT 1 FROM users WHERE id=?1 AND email<>?2)`).bind(c.req.param('id'), email, now),
+      db.prepare(`UPDATE password_reset_tokens SET used_at=coalesce(used_at,?3),
+        expires_at=CASE WHEN id='welcome:'||user_id THEN min(expires_at,?3) ELSE expires_at END
+        WHERE user_id=?1 AND (used_at IS NULL OR id='welcome:'||user_id)
+        AND EXISTS (SELECT 1 FROM users WHERE id=?1 AND email<>?2)`).bind(c.req.param('id'), email, now),
+      db.prepare(`UPDATE users SET email=coalesce(?2,email), public_user_id=coalesce(?3,public_user_id), updated_at=?4 WHERE id=?1`)
+        .bind(c.req.param('id'), email, body.data.publicUserId ?? null, now)
+    ]));
   } catch { return apiError(c, 409, 'CONFLICT', 'Email or public user ID already in use.'); }
   await audit(c.env.DB, { actorUserId: c.get('authUser')!.id, action: 'ADMIN_USER_UPDATED', targetType: 'USER', targetId: c.req.param('id'), requestId: c.get('requestId') });
   return ok(c, { updated: true });
 });
 
-const resetSchema = createSchema.pick({ password: true });
+const resetSchema = createSchema.pick({ password: true }).required();
 app.post('/users/:id/reset-password', async c => {
   const body = await jsonBody(c, resetSchema);
   if ('error' in body) return body.error;
@@ -108,9 +139,18 @@ app.post('/users/:id/reset-password', async c => {
 
 app.post('/users/:id/disable', async c => {
   if (c.get('authUser')!.id === c.req.param('id')) return apiError(c, 409, 'SELF_DISABLE_BLOCKED', 'You cannot disable your own account here.');
-  const result = await c.env.DB.prepare(`UPDATE users SET status='DISABLED', updated_at=?2 WHERE id=?1`).bind(c.req.param('id'), new Date().toISOString()).run();
-  if (!result.meta.changes) return apiError(c, 404, 'NOT_FOUND', 'User not found.');
-  await c.env.DB.prepare(`UPDATE auth_sessions SET revoked_at=?2 WHERE user_id=?1 AND revoked_at IS NULL`).bind(c.req.param('id'), new Date().toISOString()).run();
+  const db = c.env.DB;
+  const id = c.req.param('id');
+  const now = new Date().toISOString();
+  const [, result] = await withUserSettings(db, () => db.batch([
+    db.prepare(`INSERT INTO incoming_user_settings (user_id, credential_version)
+      SELECT id,1 FROM users WHERE id=?1 AND status='ACTIVE'
+      ON CONFLICT(user_id) DO UPDATE SET credential_version=credential_version+1`).bind(id),
+    db.prepare("UPDATE users SET status='DISABLED', updated_at=?2 WHERE id=?1").bind(id, now),
+    db.prepare('UPDATE auth_sessions SET revoked_at=?2 WHERE user_id=?1 AND revoked_at IS NULL').bind(id, now),
+    db.prepare('UPDATE password_reset_tokens SET used_at=?2 WHERE user_id=?1 AND used_at IS NULL').bind(id, now)
+  ]));
+  if (!result?.meta.changes) return apiError(c, 404, 'NOT_FOUND', 'User not found.');
   await audit(c.env.DB, { actorUserId: c.get('authUser')!.id, action: 'ADMIN_USER_DISABLED', targetType: 'USER', targetId: c.req.param('id'), requestId: c.get('requestId') });
   return ok(c, { status: 'DISABLED' });
 });

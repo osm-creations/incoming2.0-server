@@ -5,7 +5,7 @@ import { apiError, jsonBody, ok } from '../lib/http';
 import { hashOpaqueToken, newSessionToken, verifyCapability } from '../lib/security';
 import { randomPublicId } from '../lib/encoding';
 import { injectSelectionUrl } from '../lib/injectSelection';
-import { effectiveCallerName, loadUserSettings, usesPlainPresentation } from '../lib/userSettings';
+import { defaultRevealDelaySeconds, effectiveCallerName, loadUserSettings, usesPlainPresentation } from '../lib/userSettings';
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -38,6 +38,7 @@ app.post('/bootstrap', async c => {
       mode: row.mode,
       staticText: row.static_text,
       callerName: effectiveCallerName(settings?.caller_name, row.static_text as string | null),
+      revealDelaySeconds: settings?.reveal_delay_seconds ?? defaultRevealDelaySeconds,
       hasInjectUserId: Boolean(settings?.inject_user_id),
       usesPlainPresentation: usesPlainPresentation(c.env.PLAIN_PRESENTATION_ACCOUNT, String(row.public_user_id), String(row.owner_email)),
       openOverflowInitially: Boolean(row.open_overflow_initially),

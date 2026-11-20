@@ -4,7 +4,7 @@ import type { Bindings, Variables } from '../types/env';
 import { authMiddleware, magicianOnly } from '../middleware/core';
 import { apiError, jsonBody, ok } from '../lib/http';
 import { audit } from '../lib/db';
-import { effectiveCallerName, loadUserSettings, usesPlainPresentation, withUserSettings } from '../lib/userSettings';
+import { defaultRevealDelaySeconds, effectiveCallerName, loadUserSettings, usesPlainPresentation, withUserSettings } from '../lib/userSettings';
 import { issueCapability } from '../lib/security';
 import { randomPublicId } from '../lib/encoding';
 
@@ -24,6 +24,7 @@ const configSchema = z.object({
 const primaryUpdateSchema = z.object({
   staticText: z.string().max(500).optional(),
   callerName: z.string().trim().max(120).optional(),
+  revealDelaySeconds: z.number().int().min(0).max(60).optional(),
   injectUserId: z.string().trim().max(128)
     .regex(/^[A-Za-z0-9_-]*$/, 'Use only letters, numbers, underscores or hyphens for the Inject User ID.')
     .optional()
@@ -121,6 +122,7 @@ async function primaryResponse(c: WorkerContext, row: any) {
       ...row,
       usesPlainPresentation: usesPlainPresentation(c.env.PLAIN_PRESENTATION_ACCOUNT, owner.publicUserId, owner.email),
       caller_name: effectiveCallerName(settings?.caller_name, row.static_text),
+      reveal_delay_seconds: settings?.reveal_delay_seconds ?? defaultRevealDelaySeconds,
       inject_user_id: settings?.inject_user_id ?? null
     },
     invocationUrl: await invocationUrl(c, row)
@@ -140,18 +142,19 @@ app.patch('/primary', async c => {
   const row = await ensurePrimaryConfig(c);
   const now = new Date().toISOString();
 
-  const { staticText, callerName, injectUserId } = body.data;
+  const { staticText, callerName, injectUserId, revealDelaySeconds } = body.data;
   const ownerId = c.get('authUser')!.id;
   const db = c.env.DB;
   const previousCaller = effectiveCallerName(null, row.static_text) ?? '';
 
   await withUserSettings(db, () => db.batch([
-    db.prepare(`INSERT INTO incoming_user_settings (user_id, caller_name, inject_user_id)
-      VALUES (?1, COALESCE(?2, ?3), NULLIF(?4, ''))
+    db.prepare(`INSERT INTO incoming_user_settings (user_id, caller_name, inject_user_id, reveal_delay_seconds)
+      VALUES (?1, COALESCE(?2, ?3), NULLIF(?4, ''), COALESCE(?5, ${defaultRevealDelaySeconds}))
       ON CONFLICT(user_id) DO UPDATE SET
         caller_name=COALESCE(?2, incoming_user_settings.caller_name, ?3),
+        reveal_delay_seconds=COALESCE(?5, incoming_user_settings.reveal_delay_seconds),
         inject_user_id=CASE WHEN ?4 IS NULL THEN incoming_user_settings.inject_user_id ELSE NULLIF(?4, '') END`)
-      .bind(ownerId, callerName ?? null, staticText === undefined ? null : previousCaller, injectUserId ?? null),
+      .bind(ownerId, callerName ?? null, staticText === undefined ? null : previousCaller, injectUserId ?? null, revealDelaySeconds ?? null),
     db.prepare(`UPDATE clip_configs SET static_text=COALESCE(?2,static_text), mode='DIRECT_NOTES',
       enabled=1, open_overflow_initially=0, updated_at=?3 WHERE id=?1 AND owner_user_id=?4`)
       .bind(row.id, staticText ?? null, now, ownerId)

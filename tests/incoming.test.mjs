@@ -83,6 +83,7 @@ test('selects the same presentation for the owner and their signed App Clip link
   for (const [headers, plain] of [[performerHeaders, true], [adminHeaders, undefined]]) {
     const { data } = await request('/clip-configs/primary', { headers });
     expect(data.config.usesPlainPresentation).toBe(plain);
+    expect(data.config.reveal_delay_seconds).toBe(5);
     const url = new URL(data.invocationUrl);
     const [, , publicUserId, publicConfigId] = url.pathname.split('/');
     const { data: clip } = await request('/app-clip/bootstrap', {
@@ -90,6 +91,7 @@ test('selects the same presentation for the owner and their signed App Clip link
       body: { publicUserId, publicConfigId, capability: url.searchParams.get('t') }
     });
     expect(clip.configuration.usesPlainPresentation).toBe(plain);
+    expect(clip.configuration.revealDelaySeconds).toBe(5);
     expect(JSON.stringify(clip.configuration)).not.toContain('@');
   }
 });
@@ -172,7 +174,7 @@ test('keeps two performers’ settings, existing links and Inject selections sco
   await login('CASEPAIR', password, 'ios', 401);
   expect((await login('BETA@example.org', password)).data.user.publicUserId).toBe('casepair');
 
-  const a = (await save(alpha, { staticText: 'Rose', callerName: 'Alice', injectUserId: 'inject-A' })).data;
+  const a = (await save(alpha, { staticText: 'Rose', callerName: 'Alice', injectUserId: 'inject-A', revealDelaySeconds: 34 })).data;
   const b = (await save(beta, { staticText: 'Key', callerName: 'Bryn', injectUserId: 'inject-B' })).data;
   const alphaSettings = await request(primary, { headers: alpha });
   expect(alphaSettings.headers.get('Cache-Control')).toContain('no-store');
@@ -189,7 +191,7 @@ test('keeps two performers’ settings, existing links and Inject selections sco
   expect(oldLink.headers.get('Cache-Control')).toContain('no-store');
   expect(oldLink.data.configuration).toMatchObject({ staticText: 'Rose', callerName: 'Alice' });
   expect((await bootstrap(extra.data.invocationUrl)).data.configuration)
-    .toMatchObject({ staticText: 'Coin', callerName: 'Alice' });
+    .toMatchObject({ staticText: 'Coin', callerName: 'Alice', revealDelaySeconds: 34 });
   const aSession = oldLink.data.session;
   const bClip = (await bootstrap(b.invocationUrl)).data;
   const bSession = bClip.session;
@@ -206,6 +208,45 @@ test('keeps two performers’ settings, existing links and Inject selections sco
   await selection(bSession.id, bSession.token, 404);
   expect((await selection(aSession.id, aSession.token)).data.value).toBe('inject-A');
   expect((await bootstrap(a.invocationUrl)).data.configuration.callerName).toBe('Alice');
+});
+
+test('upgrades legacy settings and preserves each performer’s reveal delay on their existing links', async () => {
+  const path = '/clip-configs/primary';
+  const save = (headers, body, status = 200) => request(path, { method: 'PATCH', headers, body, status });
+  const original = (await save(performerHeaders, { callerName: 'Jamie', injectUserId: 'performer-selection' })).data;
+  const other = (await request(path, { headers: adminHeaders })).data;
+  const revealDelay = async link => {
+    const url = new URL(link);
+    const [, , publicUserId, publicConfigId] = url.pathname.split('/');
+    const clip = await request('/app-clip/bootstrap', {
+      method: 'POST', status: 201, body: { publicUserId, publicConfigId, capability: url.searchParams.get('t') }
+    });
+    return clip.data.configuration.revealDelaySeconds;
+  };
+
+  // Restore the previous production schema with existing accounts and signed links.
+  await database.prepare('ALTER TABLE incoming_user_settings DROP COLUMN reveal_delay_seconds').run();
+  const [legacy, legacyDelay] = await Promise.all([
+    request(path, { headers: performerHeaders }), revealDelay(original.invocationUrl)
+  ]);
+  expect(legacy.data.config).toMatchObject({ caller_name: 'Jamie', inject_user_id: 'performer-selection', reveal_delay_seconds: 5 });
+  expect(legacyDelay).toBe(5);
+
+  // A write may also be the first request after the Worker is deployed.
+  await database.prepare('ALTER TABLE incoming_user_settings DROP COLUMN reveal_delay_seconds').run();
+  await save(adminHeaders, { revealDelaySeconds: 17 });
+  for (const seconds of [60, 0]) {
+    const updated = (await save(performerHeaders, { revealDelaySeconds: seconds })).data;
+    expect(updated.invocationUrl).toBe(original.invocationUrl);
+    expect(updated.config).toMatchObject({ caller_name: 'Jamie', inject_user_id: 'performer-selection', reveal_delay_seconds: seconds });
+    expect(await revealDelay(original.invocationUrl)).toBe(seconds);
+    expect(await revealDelay(other.invocationUrl)).toBe(17);
+  }
+  for (const invalid of [-1, 61, 0.5, '15', null]) {
+    await save(performerHeaders, { revealDelaySeconds: invalid }, 422);
+  }
+  await save(performerHeaders, { staticText: '', callerName: '' });
+  expect(await revealDelay(original.invocationUrl)).toBe(0);
 });
 
 test('admin reset revokes existing credentials and preserves the account', async () => {

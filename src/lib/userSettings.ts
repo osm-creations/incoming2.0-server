@@ -1,19 +1,37 @@
+export const defaultRevealDelaySeconds = 5;
+const revealDelayColumn = `reveal_delay_seconds INTEGER NOT NULL DEFAULT ${defaultRevealDelaySeconds}
+  CHECK (typeof(reveal_delay_seconds) = 'integer' AND reveal_delay_seconds BETWEEN 0 AND 60)`;
+
 const settingsTable = `CREATE TABLE IF NOT EXISTS incoming_user_settings (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   caller_name TEXT,
   inject_user_id TEXT,
-  credential_version INTEGER NOT NULL DEFAULT 0
+  credential_version INTEGER NOT NULL DEFAULT 0,
+  ${revealDelayColumn}
 )`;
 
-// Existing D1 databases acquire the additive table on first use. Wrangler's
-// Git-connected deploy does not apply D1 migrations automatically.
+function databaseMessage(error: unknown) {
+  return `${error} ${error instanceof Error ? error.cause : ''}`;
+}
+
+// Git-connected deploys do not apply D1 migrations. Upgrade existing settings
+// in place on first use, including when requests from two isolates overlap.
 export async function withUserSettings<T>(db: D1Database, operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    const cause = error instanceof Error ? error.cause : null;
-    if (!/no such table: (?:main\.)?incoming_user_settings\b/i.test(`${error} ${cause}`)) throw error;
-    await db.prepare(settingsTable).run();
+    const message = databaseMessage(error);
+    if (/no such table: (?:main\.)?incoming_user_settings\b/i.test(message)) {
+      await db.prepare(settingsTable).run();
+    } else if (/no such column: reveal_delay_seconds\b|incoming_user_settings has no column named reveal_delay_seconds\b/i.test(message)) {
+      try {
+        await db.prepare(`ALTER TABLE incoming_user_settings ADD COLUMN ${revealDelayColumn}`).run();
+      } catch (upgradeError) {
+        if (!/duplicate column name: reveal_delay_seconds\b/i.test(databaseMessage(upgradeError))) throw upgradeError;
+      }
+    } else {
+      throw error;
+    }
     return operation();
   }
 }
@@ -21,6 +39,7 @@ export async function withUserSettings<T>(db: D1Database, operation: () => Promi
 export type UserSettings = {
   caller_name: string | null;
   inject_user_id: string | null;
+  reveal_delay_seconds: number;
 };
 
 export function usesPlainPresentation(configuredAccount: string | undefined, publicUserId: string, email: string): true | undefined {
@@ -40,6 +59,6 @@ export function effectiveCallerName(stored: string | null | undefined, note: str
 
 export function loadUserSettings(db: D1Database, id: string) {
   return withUserSettings(db, () => db.prepare(
-    'SELECT caller_name, inject_user_id FROM incoming_user_settings WHERE user_id=?1'
+    'SELECT caller_name, inject_user_id, reveal_delay_seconds FROM incoming_user_settings WHERE user_id=?1'
   ).bind(id).first<UserSettings>());
 }
